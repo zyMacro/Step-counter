@@ -38,6 +38,8 @@ import java.text.SimpleDateFormat;
 import java.util.Calendar;
 import java.util.Date;
 import java.util.List;
+
+//test
 //头天晚上不关机的时候还是有些问题，比如当屏幕灭的时候和屏幕亮的时候都不能调用清零的函数，只有当发生操作发出广播的时候才会调用。
 
 /**
