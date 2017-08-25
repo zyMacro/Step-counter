@@ -39,14 +39,11 @@ import java.util.Calendar;
 import java.util.Date;
 import java.util.List;
 
-//test
-//头天晚上不关机的时候还是有些问题，比如当屏幕灭的时候和屏幕亮的时候都不能调用清零的函数，只有当发生操作发出广播的时候才会调用。
-
 /**
  * 计步服务
  *
  * Macro:原作者的计步想法是在一天的开头记录一个步数，记作为previousStep,在进行中记录一个为event.values[0]，然后把两个相减，得到这段时间内走的步数。但这是错误的！
- * 原作者对TYPE_STEP_COUNTER这个API的理解不对，这个并不是一个月内steps的和，而是开机这段时间的步数，关机会重置的，所以需要在计步的时候，判断这是不是重启后的第一次计步，如果是的话，需要在关机时候的步数的基础上加。
+ * 原作者对TYPE_STEP_COUNTER这个API的理解不对，这个并不是一个月内steps的和，而是开机这段时间的步数，关机会重置的
  */
 @TargetApi(Build.VERSION_CODES.CUPCAKE)
 public class StepService extends Service implements SensorEventListener {
@@ -80,12 +77,17 @@ public class StepService extends Service implements SensorEventListener {
     private boolean isNewDay=false;    //用于判断是否是新的一天，如果是新的一天则将之前的步数赋值给previousStep
 
     //Macro
+//    public boolean hasInitialized=false;       //用于判断是否初始化过，只在第一次初始化的时候改为true,将头一天的步数设为此时API的值
+    public int preSteps;
+    public int startSteps;
+    public int zeroSteps;
     private boolean isFirstOpen=false;
     public boolean isZeroHour=false;
     public boolean isZeroHourExecuted=false;
+    public boolean isFirstSection=false;         //判断是不是处于今天第一次开机的状态,是第一次的话，还得减去零点时候API的步数，否则不用
     public int lastDayStep;   //如果今天没有开机的话，记录开机期间所有零点时的步数之和
     public static String clearDate="";   //此次清空的日期
-    public int zeroEventValues=0;        //记录0点时的event.values[0]的值
+    public int eventValues;
 
     //记录上次关机时候的步数
     private int lastStep;    //用于记录之前的步数
@@ -128,23 +130,23 @@ public class StepService extends Service implements SensorEventListener {
         }).start();
         startTimeCount();
 
-        //Macro:  初始化,第一次安装的时候假设当天关过机了，把今天关机的时间和步数0保存，
+        //Macro:  初始化,第一次安装的时候假设当天关过机了，把今天关机的时间和步数保存，
         String lastDate=getLastDate();
         String todayDate=getTodayDate();
 
+        isFirstOpen=true;
+
         editor=getSharedPreferences("DateStep",MODE_PRIVATE).edit();   //存储每天的日期和对应的步数
         pref=getSharedPreferences("DateStep",MODE_PRIVATE);
-        editor.putInt(lastDate,0);
-        editor.apply();
 
-        editor2=getSharedPreferences("ShutDown",MODE_PRIVATE).edit();   //存储每天开机的日期和对应的步数，另外还要存入上次关机的时间
-        pref2=getSharedPreferences("ShutDown",MODE_PRIVATE);
+        editor2=getSharedPreferences("zeroSteps",MODE_PRIVATE).edit();   //存储零点时候API的步数
+        pref2=getSharedPreferences("zeroSteps",MODE_PRIVATE);
 
-        editor2.putInt(todayDate,0);
-        editor2.putString("lastOpenDate",todayDate);    //第一次安装时，设今天为上次开机的时间，步数为0
-        editor2.apply();
-
-
+        String installDate=pref.getString("installDate","null");
+        if(installDate.equals("null")){
+            editor.putString("installDate",todayDate);
+            editor.apply();
+        }
     }
     @Override
     public int onStartCommand(Intent intent, int flags, int startId){
@@ -204,6 +206,8 @@ public class StepService extends Service implements SensorEventListener {
         }
         return totalStep;
     }
+
+
 
     /**
      * 初始化当天的日期
@@ -273,15 +277,6 @@ public class StepService extends Service implements SensorEventListener {
                     save();
                 }else if(Intent.ACTION_SHUTDOWN.equals(intent.getAction())){
                     Log.v(TAG,"receive ACTION_SHUTDOWN");
-                    //Macro： 本来想记录关机时刻的步数和对应的日期，但发现没有用，接收不到关机广播，所以只能转向另一个方法，利用event.values[0]==0来判断是否刚开机，记录开机的日期和步数
-//                    Log.v("ShutCurrent",StepDetector.CURRENT_STEP+"");
-//
-//                    String current_Date = getTodayDate();
-//
-//                    Log.v("ShutPref",pref.getInt(current_Date,0)+"");
-//                    editor2.putInt(current_Date,StepDetector.CURRENT_STEP);
-//                    editor2.putString("lastShutDownDate",current_Date);
-//                    editor2.apply();
                     save();
                 }else if(Intent.ACTION_TIME_CHANGED.equals(intent.getAction())){
                     Log.v(TAG,"receive ACTION_TIME_CHANGED");
@@ -308,8 +303,8 @@ public class StepService extends Service implements SensorEventListener {
                 new Intent(this, MainActivity.class),0);
         builder.setContentIntent(contentIntent);
         builder.setSmallIcon(R.mipmap.ic_launcher_round);
-        builder.setTicker("BasePedo");
-        builder.setContentTitle("BasePedo");
+        builder.setTicker("交大健康");
+        builder.setContentTitle("交大健康");
         //设置不可清除
         builder.setOngoing(true);
         builder.setContentText(content);
@@ -401,80 +396,55 @@ public class StepService extends Service implements SensorEventListener {
         });
     }
 
+    //macro:
+    //需要注意的是，这个函数只会在步数发生改变的时候调用，在后台静止的时候是不会调用的，所以不能在这个地方进行零点API数据保存的工作
     @Override
     public void onSensorChanged(SensorEvent event) {
         if(stepSensor == 0){   //使用计步传感器
-            //Macro:  其实我改写之后，这个isNewDay的if-else已经没有什么意义了
-//            if(isNewDay) {
-//                //用于判断是否为新的一天，如果是那么记录下计步传感器统计步数中的数据
-//                // 今天走的步数=传感器当前统计的步数-之前统计的步数
-//                previousStep = (int) event.values[0];    //得到传感器统计的步数
-//                isNewDay = false;
-//                save();
-//                //为防止在previousStep赋值之前数据库就进行了保存，我们将数据库中的信息更新一下
-//                List<StepData> list=DbUtils.getQueryByWhere(StepData.class,"today",new String[]{CURRENTDATE});
-//                //修改数据
-//                StepData data=list.get(0);
-//                data.setPreviousStep(previousStep+"");
-//                DbUtils.update(data);
-//            }else {
-//                //取出之前的数据
-//                List<StepData> list = DbUtils.getQueryByWhere(StepData.class, "today", new String[]{CURRENTDATE});
-//                StepData data=list.get(0);
-//                Log.v("previousStepOld0",previousStep+"");
-//            }
             String current_Date = getTodayDate();
             String last_Date=getLastDate();
-            if(event.values[0]==0){    //判断是否是重启后的，如果是，保存当日的日期和对应的步数，以及"lastOpenDate"对应的当前日期，方便后面计算的时候找到最近一次启动时候的数据
-                editor2.putInt(current_Date,StepDetector.CURRENT_STEP);
-                editor2.putString("lastOpenDate",current_Date);
-                editor2.apply();
-            }
-//            if(pref.contains(last_Date)){
-//                Log.v("StepContains0",last_Date);
-//                lastDayStep=getLastDayStep();   //得到昨天最后的步数
-//            }
-//            else{
-//                Log.v("StepNotContains0",last_Date);
-//            }
 
-            if(pref2.contains(current_Date)){              //如果今天开机过的话，得到开机时候的步数lastStep
-                if(pref2.contains(current_Date)){
-                    Log.v("StepContains",current_Date);
-                    lastStep=pref2.getInt(current_Date,1000);
-                }
-                else{
-                    Log.v("StepNotContain",current_Date);
-                }
-                StepDetector.CURRENT_STEP=(int)event.values[0]+lastStep;
-            }
-            else{
-                String lastOpenDate=pref2.getString("lastOpenDate","");
-                lastDayStep=getLastDayStep(lastOpenDate);
-                if(pref2.contains(lastOpenDate)){
-                    Log.v("StepContains2",lastOpenDate);
-                    lastStep=pref2.getInt(lastOpenDate,1000);
-                }
-                else{
-                    Log.v("StepNotContains2",lastOpenDate);
-                }
-                StepDetector.CURRENT_STEP=(int)event.values[0]+lastStep-lastDayStep;   //Macro:  lastDayStep应该包括从现在到第一次开机之间所有日子的步数
-            }
-                editor.putInt(current_Date,StepDetector.CURRENT_STEP);
+            //安装后第一次开启app的时候，将头一天的zeroSteps置为当前api的值
+            Boolean hasInitialized=pref.getBoolean("hasInitialized",false);
+            if(hasInitialized==false){
+                int putInitialSteps=(int)event.values[0];
+                editor.putBoolean("hasInitialized",true);
                 editor.apply();
-                Log.v("StepAll",pref.getAll()+"");
-                Log.v("StepAllOpen",pref2.getAll()+"");
-                save();
-//            }
-//            Log.v("previousStep",previousStep+"");
-            Log.v("lastStep",lastStep+"");
-            Log.v("StepDetector",StepDetector.CURRENT_STEP+"");
-            Log.v("Step.event.values",event.values[0]+"");
-            Log.v("Step.lastDayStep",lastDayStep+"");
+                editor2.putInt(current_Date,putInitialSteps);
+                editor2.apply();
+                Log.v("StepInitialDate",current_Date+" "+putInitialSteps);
+            }
+            eventValues=(int)event.values[0];     //不断更新最新的event.values[0]的值，该值声明为全局变量，后台在不断轮询是否为零点，如果是的话，就将该值存入editor2中
 
-//            Log.v("StepShared",pref.getInt(current_Date,0)+"");
-            Log.v("StepLastOpenDate",pref2.getString("lastOpenDate",""));
-//            Log.v("StepLastDate",last_Date);
+            zeroSteps=pref2.getInt(current_Date,0);      //零点时候API的步数，如果零点未关机，则为当时API的值，否则为0
+
+            if(isFirstOpen==true){    //判断是否是本次开机后第一次开机期间，获取相应的初始值,因为刚开机的时候，判断依据:如果是今天第一次开机，今天目前是没有数据的，否则是有的
+                preSteps=pref.getInt(current_Date,-1);     //获取打开app的时候，今天已经走的步数
+                if(preSteps==-1){
+                    isFirstSection=true;
+                }
+                isFirstOpen=false;
+            }
+
+            //如果用户在前一天的中间打开手机，那个时候不是firstSection，但他一直没有关机，到第二天零点的时候，就应该为firstSection了
+            if(isZeroHour){
+                Log.v("stepIs2",isFirstSection+"");
+                isFirstSection=true;
+            }
+
+            if(isFirstSection==true){
+                StepDetector.CURRENT_STEP=(int)event.values[0]-zeroSteps;
+                Log.v("StepFirst",event.values[0]+" "+zeroSteps);
+            }else{
+                StepDetector.CURRENT_STEP=(int)event.values[0]+preSteps;
+                Log.v("StepNotFirst",event.values[0]+" "+preSteps);
+            }
+            editor.putInt(current_Date,StepDetector.CURRENT_STEP);
+            editor.apply();
+            Log.v("StepPref1",pref.getAll()+"");
+            Log.v("StepPref2",pref2.getAll()+"");
+            save();
+
 
             //或者只是使用下面一句话，不过程序关闭后可能无法计步。根据需求可自行选择。
             //如果记录程序开启时走的步数可以使用这种方式——StepDetector.CURRENT_STEP++;
@@ -483,7 +453,7 @@ public class StepService extends Service implements SensorEventListener {
             StepDetector.CURRENT_STEP++;
         }
         //更新状态栏信息
-        updateNotification("今日步数：" + StepDetector.CURRENT_STEP + " 步");
+        updateNotification("测试版  今日步数：" + StepDetector.CURRENT_STEP + "  "+zeroSteps+"   "+preSteps+"  "+isFirstSection);
     }
 
     @Override
@@ -491,42 +461,41 @@ public class StepService extends Service implements SensorEventListener {
 
     }
 
+    //Macro:
+    //每次判断是不是零点，如果是零点且今天的零点值还没存(通过是不是等于0来判断)就存下来
+    public void preserveZeroSteps(){
+        String current_Date = getTodayDate();
+        isZeroHour();
+        if(isZeroHour){
+            int tempZeroSteps=pref2.getInt(current_Date,-1);
+            if(tempZeroSteps==-1){
+                isFirstSection=true;            //一旦零点更新，此时肯定为第二天的第一段开机时间
+                int putZeroSteps = eventValues;
+                editor2.putInt(current_Date,putZeroSteps);
+                editor2.apply();
+                Log.v("StepPreserveZeroDate",current_Date+" "+putZeroSteps);
+                StepDetector.CURRENT_STEP=0;
+                save();
+                //更新状态栏信息
+//                updateNotification("今日步数：" + StepDetector.CURRENT_STEP + " 步  零点API步数:"+putZeroSteps);
+            }
+        }
+    }
 
-//    //Macro:  判断是不是零点，如果是，则清零
-//    public void clearZero(){
-////        if(!isZeroHourExecuted){
-//        isZeroHour();
-//        if(isZeroHour  && !clearDate.equals(getTodayDate())){
-//            List<StepData> list=DbUtils.getQueryByWhere(StepData.class,"today",new String[]{CURRENTDATE});
-//            StepDetector.CURRENT_STEP=Integer.parseInt(list.get(0).getStep());
-//
-//            lastDayStep=StepDetector.CURRENT_STEP;
-////                lastStep=0;
-////                StepDetector.CURRENT_STEP=0;
-//            save();
-//            clearDate = getTodayDate();
-//            Log.v("StepExecuted",lastDayStep+"");
-//        }
-//        isZeroHour=false;
-//
-////        }
-//        Log.v("StepZero",isZeroHourExecuted+"");
-//        Log.v("StepLastDay",lastDayStep+"");
-//    }
+    //Macro:  判断是不是零点
+    public void isZeroHour(){
 
-//    public void isZeroHour(){
-//
-//        Calendar cal=Calendar.getInstance();     //当前日期
-//        int hour=cal.get(Calendar.HOUR_OF_DAY);  //获取小时
-//        int minute=cal.get(Calendar.MINUTE);     //获取分钟
-//        int minuteOfDay=hour*60+minute;          //从0:00分到目前为止的分钟数
-//        final int end=2;
-//        if(minuteOfDay<end){
-//            isZeroHour=true;
-//            Log.v("StepZeroHour",isZeroHour+"");
-//        }
-//        Log.v("StepminuteOfDay",minuteOfDay+"");
-//    }
+        Calendar cal=Calendar.getInstance();     //当前日期
+        int hour=cal.get(Calendar.HOUR_OF_DAY);  //获取小时
+        int minute=cal.get(Calendar.MINUTE);     //获取分钟
+        int minuteOfDay=hour*60+minute;          //从0:00分到目前为止的分钟数
+        final int end=2;
+        if(minuteOfDay<end){
+            isZeroHour=true;
+            Log.v("StepZeroHour",isZeroHour+"");
+        }
+        Log.v("StepminuteOfDay",minuteOfDay+"");
+    }
 
 
     /**
@@ -606,6 +575,7 @@ public class StepService extends Service implements SensorEventListener {
             //如果计时器正常结束，则开始计步
             time.cancel();
             save();
+            preserveZeroSteps();
             startTimeCount();
         }
     }
